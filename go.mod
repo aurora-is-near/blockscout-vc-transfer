@@ -1,4 +1,4 @@
-module github.com/aurora-is-near/tx-stream
+module github.com/aurora-is-near/blockscout-vc-transfer
 
 go 1.21
 
