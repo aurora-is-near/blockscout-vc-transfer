@@ -1,0 +1,9 @@
+source:
+  db: postgresql://blockscout:@localhost:5432/blockscout
+  table: smart_contracts
+  # table: blocks
+destination:
+  db: postgresql://blockscout:@localhost:5432/blockscout
+  table: smart_contracts
+  # table: blocks
+condition: "number < 1000"
