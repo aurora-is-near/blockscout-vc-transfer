@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
@@ -31,6 +32,7 @@ func main() {
 	rootCmd.AddCommand(dumpCmd)
 	rootCmd.AddCommand(loadCmd)
 	rootCmd.AddCommand(transferCmd)
+	rootCmd.AddCommand(transferNamesCmd)
 	cobra.CheckErr(rootCmd.Execute())
 }
 
@@ -109,7 +111,7 @@ var testCmd = &cobra.Command{
 }
 
 var transferCmd = &cobra.Command{
-	Use:   "blockchain-vc-transfer",
+	Use:   "transfer",
 	Short: "Transfer data from source database to destination database",
 	Run: func(cmd *cobra.Command, args []string) {
 		sourceConn := openDB(config.Source)
@@ -133,6 +135,32 @@ var transferCmd = &cobra.Command{
 
 		dump(sourceConn, config.Source.Table, absPath, config.Condition)
 		load(destConn, config.Destination.Table, absPath)
+
+		fmt.Println("Data transfered successfully")
+	},
+}
+
+var transferNamesCmd = &cobra.Command{
+	Use:   "transfer-names",
+	Short: "Transfer names from source database to destination database",
+	Run: func(cmd *cobra.Command, args []string) {
+		sourceConn := openDB(config.Source)
+		destConn := openDB(config.Destination)
+		fmt.Println("Database connection is working")
+		defer sourceConn.Close(context.Background())
+		defer destConn.Close(context.Background())
+
+		rows, err := readFromSourceTable(sourceConn)
+		if err != nil {
+			log.Fatalf("Error reading from source table: %v", err)
+		}
+
+		for _, row := range rows {
+			err = writeToTargetTable(destConn, row)
+			if err != nil {
+				log.Printf("Error writing to target table: %v", err)
+			}
+		}
 
 		fmt.Println("Data transfered successfully")
 	},
@@ -189,4 +217,67 @@ func load(conn *pgx.Conn, table string, filename string) {
 		fmt.Fprintf(os.Stderr, "QueryRow failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func readFromSourceTable(conn *pgx.Conn) ([]map[string]interface{}, error) {
+	query := "SELECT address_hash, name, \"primary\", inserted_at, updated_at, metadata, id FROM address_names"
+	rows, err := conn.Query(context.Background(), query)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %v", err)
+	}
+	defer rows.Close()
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		var addressHash []byte
+		var name string
+		var primary bool
+		var insertedAt, updatedAt time.Time
+		var metadata map[string]interface{}
+		var id int
+
+		err = rows.Scan(&addressHash, &name, &primary, &insertedAt, &updatedAt, &metadata, &id)
+		if err != nil {
+			return nil, fmt.Errorf("row scan failed: %v", err)
+		}
+
+		row := map[string]interface{}{
+			"address_hash": addressHash,
+			"name":         name,
+			"primary":      primary,
+			"inserted_at":  insertedAt,
+			"updated_at":   updatedAt,
+			"metadata":     metadata,
+			"id":           id,
+		}
+		results = append(results, row)
+	}
+
+	return results, nil
+}
+
+func writeToTargetTable(conn *pgx.Conn, row map[string]interface{}) error {
+	// Check if the address_hash already exists in the target table
+	var exists bool
+	checkQuery := "SELECT EXISTS(SELECT 1 FROM address_names WHERE address_hash = $1)"
+	err := conn.QueryRow(context.Background(), checkQuery, row["address_hash"]).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("check query failed: %v", err)
+	}
+
+	if exists {
+		return nil // If the address_hash already exists, do nothing
+	}
+
+	fmt.Printf("Inserting row with address_hash: %x\n", row["address_hash"])
+	// Insert the row into the target table
+	insertQuery := `INSERT INTO address_names (address_hash, name, "primary", inserted_at, updated_at, metadata, id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	_, err = conn.Exec(context.Background(), insertQuery,
+		row["address_hash"], row["name"], row["primary"], row["inserted_at"], row["updated_at"], row["metadata"], row["id"])
+	if err != nil {
+		return fmt.Errorf("insert query failed: %v", err)
+	}
+
+	return nil
 }
